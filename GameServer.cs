@@ -5,10 +5,10 @@ using BobboNet.Networking.Util;
 
 namespace BobboNet.Networking.Backend;
 
-public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : BackgroundService 
-    where SelfType : GameServer<SelfType, PlayerType, PlayerUpdate>
-    where PlayerType : GamePlayer<PlayerUpdate>, new()
-    where PlayerUpdate : class, INetSerializable, new()
+public abstract class GameServer<SelfType, PlayerType, UpdateDataType> : BackgroundService 
+    where SelfType : GameServer<SelfType, PlayerType, UpdateDataType>
+    where PlayerType : GamePlayer<UpdateDataType>, new()
+    where UpdateDataType : class, INetSerializable, ICopyConstructor<UpdateDataType>, new()
 {
     //
     //  Properties
@@ -73,14 +73,15 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
 
         // Register nested data types
         processor.RegisterBobboNetNestedTypes();
-        processor.RegisterNestedType<StandardMessages<PlayerUpdate>.SM_BatchPlayerUpdates>(() => new());
-        processor.RegisterNestedType<StandardMessages<PlayerUpdate>.SM_InitialPlayerUpdates>(() => new());
-        processor.RegisterNestedType<StandardMessages<PlayerUpdate>.SM_PlayerJoin>(() => new());
-        processor.RegisterNestedType<StandardMessages<PlayerUpdate>.SM_PlayerLeave>(() => new());
+        processor.RegisterNestedType<StandardMessages<UpdateDataType>.SCM_PlayerUpdate>(() => new());
+        processor.RegisterNestedType<StandardMessages<UpdateDataType>.SM_BatchPlayerUpdates>(() => new());
+        processor.RegisterNestedType<StandardMessages<UpdateDataType>.SM_InitialPlayerUpdates>(() => new());
+        processor.RegisterNestedType<StandardMessages<UpdateDataType>.SM_PlayerJoin>(() => new());
+        processor.RegisterNestedType<StandardMessages<UpdateDataType>.SM_PlayerLeave>(() => new());
         OnRegisterPacketTypes(processor);
 
         // Register message hooks
-        processor.SubscribeReusable<PlayerUpdate, NetPeer>(OnMessagePlayerUpdate);
+        processor.SubscribeReusable<UpdateDataType, NetPeer>(OnMessagePlayerUpdate);
         OnRegisterPacketHooks(processor);
         
         
@@ -120,13 +121,26 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
     private void OnClientConnected(NetPeer peer)
     {
         // Tell other clients about the new player.
-        StandardMessages<PlayerUpdate>.SM_PlayerJoin playerJoinMessage = new StandardMessages<PlayerUpdate>.SM_PlayerJoin();
+        StandardMessages<UpdateDataType>.SM_PlayerJoin playerJoinMessage = new StandardMessages<UpdateDataType>.SM_PlayerJoin();
         playerJoinMessage.Id = peer.Id;
         Network.SendToAll(packetProcessor.Write(playerJoinMessage), NetworkChannelIDs.ReliableOrdered, DeliveryMethod.ReliableOrdered, peer);  // (ignore this peer)
 
-        // Get the current entire player state
-        StandardMessages<PlayerUpdate>.SM_InitialPlayerUpdates initialUpdatesMessage = new StandardMessages<PlayerUpdate>.SM_InitialPlayerUpdates();
-        initialUpdatesMessage.BatchUpdates.Updates = GetEntirePlayerState();
+        // Create a message to hold all initial player updates...
+        StandardMessages<UpdateDataType>.SM_InitialPlayerUpdates initialUpdatesMessage = new StandardMessages<UpdateDataType>.SM_InitialPlayerUpdates();
+        initialUpdatesMessage.BatchUpdates.Updates = new StandardMessages<UpdateDataType>.SCM_PlayerUpdate[players.Count]; 
+        
+        // ...loop through all players...
+        int index = 0;
+        foreach(PlayerType player in players.Values)
+        {
+            // ...and add them to the update above!
+            initialUpdatesMessage.BatchUpdates.Updates[index++] = new StandardMessages<UpdateDataType>.SCM_PlayerUpdate()
+            {
+                Id = player.GetID(),
+                Data = player.CreatePlayerUpdate()
+            };
+        }
+
 
         // Create new player info and configure it
         PlayerType newPlayer = new PlayerType();
@@ -146,7 +160,7 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
         players.Remove(peer.Id);
 
         // Tell other clients that a player has left
-        StandardMessages<PlayerUpdate>.SM_PlayerLeave leaveMessage = new StandardMessages<PlayerUpdate>.SM_PlayerLeave();
+        StandardMessages<UpdateDataType>.SM_PlayerLeave leaveMessage = new StandardMessages<UpdateDataType>.SM_PlayerLeave();
         leaveMessage.Id = peer.Id;
         Network.SendToAll(packetProcessor.Write(leaveMessage), NetworkChannelIDs.ReliableOrdered, DeliveryMethod.ReliableOrdered, peer);  // (ignore this peer)
 
@@ -173,7 +187,7 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
     //  Message Events
     //
 
-    private void OnMessagePlayerUpdate(PlayerUpdate updateData, NetPeer peer)
+    private void OnMessagePlayerUpdate(UpdateDataType updateData, NetPeer peer)
     {
         // Find the player object and store it. If there's no player with this ID, exit early and return false.
         PlayerType? player;
@@ -216,8 +230,14 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
         {
             if(player.ShouldPlayerUpdate())
             {
-                PlayerUpdate updateMessage = player.CommitToPlayerUpdate();
-                Network.SendToAll(packetProcessor.Write<PlayerUpdate>(updateMessage), NetworkChannelIDs.Unreliable, DeliveryMethod.Unreliable, player.GetPeer());
+                // Create a message describing the player update
+                StandardMessages<UpdateDataType>.SCM_PlayerUpdate updateMessage = new StandardMessages<UpdateDataType>.SCM_PlayerUpdate()
+                {
+                    Id = player.GetID(),
+                    Data = player.CommitToPlayerUpdate()
+                };
+
+                Network.SendToAll(packetProcessor.Write(updateMessage), NetworkChannelIDs.Unreliable, DeliveryMethod.Unreliable, player.GetPeer());
             }
         }
     }
@@ -227,17 +247,11 @@ public abstract class GameServer<SelfType, PlayerType, PlayerUpdate> : Backgroun
     //  Private Methods
     //
 
-    private PlayerUpdate[] GetEntirePlayerState()
+    private UpdateDataType[] GetEntirePlayerState()
     {
-        PlayerUpdate[] updates = new PlayerUpdate[players.Count];
+        UpdateDataType[] updates = new UpdateDataType[players.Count];
 
-        // Loop through all players...
-        int index = 0;
-        foreach(PlayerType player in players.Values)
-        {
-            // ...and add them to the array above!
-            updates[index++] = player.CreatePlayerUpdate();
-        }
+        
 
         // Once all states have been assigned, we're done!
         return updates;
