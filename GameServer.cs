@@ -81,7 +81,7 @@ public abstract class GameServer<SelfType, PlayerType, UpdateDataType> : Backgro
         OnRegisterPacketTypes(processor);
 
         // Register message hooks
-        processor.SubscribeReusable<UpdateDataType, NetPeer>(OnMessagePlayerUpdate);
+        processor.SubscribeReusable<StandardMessages<UpdateDataType>.SCM_PlayerUpdate, NetPeer>(OnMessagePlayerUpdate);
         OnRegisterPacketHooks(processor);
         
         
@@ -187,7 +187,7 @@ public abstract class GameServer<SelfType, PlayerType, UpdateDataType> : Backgro
     //  Message Events
     //
 
-    private void OnMessagePlayerUpdate(UpdateDataType updateData, NetPeer peer)
+    private void OnMessagePlayerUpdate(StandardMessages<UpdateDataType>.SCM_PlayerUpdate updateData, NetPeer peer)
     {
         // Find the player object and store it. If there's no player with this ID, exit early and return false.
         PlayerType? player;
@@ -195,7 +195,7 @@ public abstract class GameServer<SelfType, PlayerType, UpdateDataType> : Backgro
 
         // OTHERWISE...
         // ...we've found a real player. Let's update them!
-        player.ApplyPlayerUpdate(updateData);
+        player.ApplyPlayerUpdate(updateData.Data);
     }
 
     //
